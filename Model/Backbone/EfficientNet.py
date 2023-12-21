@@ -5,6 +5,17 @@ from torch import Tensor
 import math
 from collections import OrderedDict
 
+def adjust_repeats(repeats:int, depth_coefficient:float):
+    return int(math.ceil(depth_coefficient * repeats))
+    
+def adjust_channel(channel:int, width_coefficient:float, channel_min:int=None ,divisor:int=8):
+    if channel_min == None:
+        channel_min = divisor
+    channel_adjust = max(channel_min, int(channel*width_coefficient + divisor/2) // divisor * divisor)
+    if channel_adjust < 0.9 * channel * width_coefficient:
+        channel_adjust += divisor
+    return channel_adjust
+
 class SqueezeExcitationModule(nn.Module):
     def __init__(self, channel_input:int, channel_expand:int, squeeze_factor:int=4):
         """
@@ -59,9 +70,9 @@ class MBConv(nn.Module):
         """
         super(MBConv, self).__init__()
         self.kernel_size = kernel_size
-        self.channel_input_adj = self.adjust_channel(channel_input, width_coefficient)
+        self.channel_input_adj = adjust_channel(channel_input, width_coefficient)
         self.channel_expanded = self.channel_input_adj * expanded_ratio
-        self.channel_output_adj = self.adjust_channel(channel_output, width_coefficient)
+        self.channel_output_adj = adjust_channel(channel_output, width_coefficient)
         self.stride = stride
         self.drop_connect_rate = drop_connect_rate
         self.use_shortcut = (stride == 1 and channel_input == channel_output)
@@ -70,14 +81,15 @@ class MBConv(nn.Module):
         if expanded_ratio == 6:
             self.expand_conv = nn.Sequential(
                 nn.Conv2d(self.channel_input_adj, self.channel_expanded, 1, bias=False), 
-                nn.BatchNorm2d(),
+                nn.BatchNorm2d(self.channel_expanded),
                 nn.SiLU()
             )
         
         # 2. kxk Depthwise Conv + BN + Swish
         self.depthwise_conv = nn.Sequential(
-            nn.Conv2d(self.channel_expanded, self.channel_expanded , self.kernel_size, stride=self.stride, groups=self.channel_expanded, bias=False),
-            nn.BatchNorm2d(),
+            nn.Conv2d(self.channel_expanded, self.channel_expanded , self.kernel_size, stride=self.stride,
+                      padding=int((self.kernel_size-1)/2),groups=self.channel_expanded, bias=False),
+            nn.BatchNorm2d(self.channel_expanded),
             nn.SiLU()
         )
 
@@ -87,20 +99,12 @@ class MBConv(nn.Module):
         # 4. 1x1 Conv + BN
         self.down_conv = nn.Sequential(
             nn.Conv2d(self.channel_expanded, self.channel_output_adj, 1, bias=False),
-            nn.BatchNorm2d()
+            nn.BatchNorm2d(self.channel_output_adj)
         )
 
         # 5. Droupout
         if self.use_shortcut:
             self.droupout = StochasticDepth(drop_connect_rate)
-
-    def adjust_channel(channel:int, width_coefficient:float, channel_min:int=None ,divisor:int=8):
-        if channel_min == None:
-            channel_min = divisor
-        channel_adjust = max(channel_min, int(channel*width_coefficient + divisor/2) // divisor * divisor)
-        if channel_adjust < 0.9 * channel * width_coefficient:
-            channel_adjust += divisor
-        return channel_adjust
     
     def forward(self, x:Tensor) -> Tensor:
         x_0 = x
@@ -132,7 +136,9 @@ class EfficientNet(nn.Module):
                  "stage6": [5, 80, 112, 6, 1, 3],
                  "stage7": [5, 112, 192, 6, 2, 4],
                  "stage8": [3, 192, 320, 6, 1, 1]}
-        self.num_MBConvs = float(sum(self.adjust_repeats(item[-1]) for item in self.param))
+        self.num_MBConvs = 0
+        for item in self.param.values():
+            self.num_MBConvs += float(adjust_repeats(item[-1], depth_coefficient))
         self.recent_block_number = 0
         self.drop_connect_rate = drop_connect_rate
         self.width_coefficient = width_coefficient
@@ -141,9 +147,9 @@ class EfficientNet(nn.Module):
         # stage1
         self.stage1 = nn.Sequential(
             nn.Conv2d(in_channels=channel_figure,
-                      out_channels=self.adjust_channel(32, width_coefficient),
-                      kernel_size=3, stride=2, bias=False),
-            nn.BatchNorm2d()
+                      out_channels=adjust_channel(32, width_coefficient),
+                      kernel_size=3, padding=1, stride=2, bias=False),
+            nn.BatchNorm2d(adjust_channel(32, width_coefficient))
         )
 
         # stage2
@@ -169,30 +175,26 @@ class EfficientNet(nn.Module):
 
         # stage9
         self.stage9 = nn.Sequential(
-            nn.Conv2d(in_channels=self.adjust_channel(self.param["stage8"][2], width_coefficient),
-                      out_channels=self.adjust_channel(1280, width_coefficient)),
-            nn.BatchNorm2d(),
-            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels=adjust_channel(self.param["stage8"][2], width_coefficient),
+                      out_channels=adjust_channel(1280, width_coefficient),
+                      kernel_size=1, bias=False),
+            nn.BatchNorm2d(adjust_channel(1280, width_coefficient)),
+            nn.AdaptiveAvgPool2d(1))
+        
+        # stage10
+        self.stage10 = nn.Sequential(
             nn.Dropout(p=drop_rate, inplace=True),
-            nn.Linear(self.adjust_channel(1280, width_coefficient), classes)
+            nn.Linear(adjust_channel(1280, width_coefficient), classes)
         )
-    
-    def adjust_repeats(repeats:int, depth_coefficient:float):
-        return int(math.ceil(depth_coefficient * repeats))
-    
-    def adjust_channel(channel:int, width_coefficient:float, channel_min:int=None ,divisor:int=8):
-        if channel_min == None:
-            channel_min = divisor
-        channel_adjust = max(channel_min, int(channel*width_coefficient + divisor/2) // divisor * divisor)
-        if channel_adjust < 0.9 * channel * width_coefficient:
-            channel_adjust += divisor
-        return channel_adjust
-    
+       
     def build_stage(self, stage_name:str) -> nn.Module:
-        layers = OrderedDict()
+        layers = []
         param_list = self.param[stage_name]
-        for index in range(self.adjust_repeats(param_list[5], self.depth_coefficient)):
-            layers.update(MBConv(kernel_size=param_list[0],
+        for index in range(adjust_repeats(param_list[5], self.depth_coefficient)):
+            if index > 0:
+                param_list[4] = 1 # stride = 1
+                param_list[1] = param_list[2] # channel_input = channel_output
+            layers.append(MBConv(kernel_size=param_list[0],
                                  channel_input=param_list[1],
                                  channel_output=param_list[2],
                                  expanded_ratio=param_list[3],
@@ -200,17 +202,24 @@ class EfficientNet(nn.Module):
                                  drop_connect_rate=self.drop_connect_rate*self.recent_block_number/self.num_MBConvs,
                                  width_coefficient=self.width_coefficient))
             self.recent_block_number += 1
-        return nn.Sequential(layers)
+        return nn.Sequential(*layers)
     
     def forward(self, x:Tensor) -> Tensor:
-        r0 = self.stage1(x)
-        r1 = self.stage2(r0)
-        r2 = self.stage3(r1)
-        r3 = self.stage4(r2)
-        r4 = self.stage5(r3)
-        r5 = self.stage6(r4)
-        r6 = self.stage7(r5)
-        r7 = self.stage8(r6)
-        r8 = self.stage9(r7)
+        r0 = self.stage1(x)         # Shape r0: [b,   32,  p/2, 512]
+        r1 = self.stage2(r0)        # Shape r1: [b,   16,  p/2, 512]
+        r2 = self.stage3(r1)        # Shape r2: [b,   24,  p/4, 256]
+        r3 = self.stage4(r2)        # Shape r3: [b,   40,  p/8, 128]
+        r4 = self.stage5(r3)        # Shape r4: [b,   80, p/16,  64]
+        r5 = self.stage6(r4)        # Shape r5: [b,  112, p/16,  64]
+        r6 = self.stage7(r5)        # Shape r6: [b,  192, p/32,  32]
+        r7 = self.stage8(r6)        # Shape r7: [b,  320, p/32,  32]
+        r8 = self.stage9(r7)        # Shape r8: [b, 1280,    1,   1]
+        r8 = torch.flatten(r8, 1)   # Shape r8: [b, 1280]
+        r9 = self.stage10(r8)       # Shape r9: [b,    4]
 
-        return r8
+        return r9
+    
+if __name__ == "__main__":
+    from torchsummary import summary
+    model = EfficientNet(channel_figure=1, classes=4)
+    summary(model, input_size=(1, 1024, 1024), device="cpu")
