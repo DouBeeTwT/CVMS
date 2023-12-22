@@ -6,7 +6,6 @@ import torch.nn as nn
 class BiFPN(nn.Module):
     def __init__(self) -> None:
         super(BiFPN, self).__init__()
-        self.
 
     def forward(self, x):
         pass
