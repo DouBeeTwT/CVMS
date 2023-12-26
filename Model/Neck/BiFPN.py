@@ -25,7 +25,8 @@ class BiFPN_layer(nn.Module):
         # Swish
         self.swish = nn.SiLU()
 
-    def forward(self, P3i:Tensor, P4i:Tensor, P5i:Tensor, P6i:Tensor, P7i:Tensor) -> Tensor:
+    def forward(self, x:list) -> Tensor:
+        P3i, P4i, P5i, P6i, P7i = x[0], x[1], x[2], x[3], x[4]
         # Up layer
         P6m = self.swish(P6i + self.P7i_P6m(P7i))
         P5m = self.swish(P5i + self.P6m_P5m(P6m))
@@ -37,22 +38,22 @@ class BiFPN_layer(nn.Module):
         P6o = self.swish(P6i + P6m + self.P5o_P6o(P5o))
         P7o = self.swish(P7i + self.P6o_P7o(P6o))
         
-        return P3o, P4o, P5o, P6o, P7o
+        return [P3o, P4o, P5o, P6o, P7o]
 
 
 
 if __name__ == "__main__":
-    tensor3i = torch.rand(2,  16, 1024, 1024)
-    tensor4i = torch.rand(2,  24,  512,  512)
-    tensor5i = torch.rand(2,  40,  256,  256)
-    tensor6i = torch.rand(2, 112,  128,  128)
-    tensor7i = torch.rand(2, 320,   64,   64)
+    input = [torch.rand(2,  16, 1024, 1024),
+             torch.rand(2,  24,  512,  512),
+             torch.rand(2,  40,  256,  256),
+             torch.rand(2, 112,  128,  128),
+             torch.rand(2, 320,   64,   64)]
 
     model = BiFPN_layer(feature_list=[16, 24, 40, 112, 320])
-    P3o, P4o, P5o, P6o, P7o = model(tensor3i,tensor4i,tensor5i,tensor6i,tensor7i)
+    output = model(input)
 
-    print("Shape of P3o:", P3o.shape)
-    print("Shape of P4o:", P4o.shape)
-    print("Shape of P5o:", P5o.shape)
-    print("Shape of P6o:", P6o.shape)
-    print("Shape of P7o:", P7o.shape)
+    print("Shape of P3o:", output[0].shape)
+    print("Shape of P4o:", output[1].shape)
+    print("Shape of P5o:", output[2].shape)
+    print("Shape of P6o:", output[3].shape)
+    print("Shape of P7o:", output[4].shape)

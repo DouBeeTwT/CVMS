@@ -124,9 +124,9 @@ class MBConv(nn.Module):
         return x
 
 class EfficientNet(nn.Module):
-    def __init__(self, channel_figure:int, classes:int, dim_list:list=[16, 24, 40, 112, 320],
+    def __init__(self, channel_figure:int, dim_list:list=[16, 24, 40, 112, 320],
                  width_coefficient:float=1.0, depth_coefficient:float=1.0,
-                 drop_rate:float=0.2, drop_connect_rate:float=0.2):
+                 drop_connect_rate:float=0.2):
         super(EfficientNet, self).__init__()
         # Parameters of stage2~stage8
         # [0:kernal size, 1:channel_input, 2:channel_output, 3:expanded_ratio, 4:stride, 5:repeats]
@@ -174,20 +174,6 @@ class EfficientNet(nn.Module):
 
         # stage8
         self.stage8 = self.build_stage(stage_name="stage8")
-
-        # stage9
-        self.stage9 = nn.Sequential(
-            nn.Conv2d(in_channels=adjust_channel(self.param["stage8"][2], width_coefficient),
-                      out_channels=adjust_channel(1280, width_coefficient),
-                      kernel_size=1, bias=False),
-            nn.BatchNorm2d(adjust_channel(1280, width_coefficient)),
-            nn.AdaptiveAvgPool2d(1))
-        
-        # stage10
-        self.stage10 = nn.Sequential(
-            nn.Dropout(p=drop_rate, inplace=True),
-            nn.Linear(adjust_channel(1280, width_coefficient), classes)
-        )
        
     def build_stage(self, stage_name:str) -> nn.Module:
         layers = []
@@ -206,7 +192,7 @@ class EfficientNet(nn.Module):
             self.recent_block_number += 1
         return nn.Sequential(*layers)
     
-    def forward(self, x:Tensor) -> Tensor:
+    def forward(self, x:Tensor) -> list:
         r0 = self.stage1(x)         # Shape r0: [b,   32,  p/1, 1024]
         r1 = self.stage2(r0)        # Shape r1: [b,   16,  p/1, 1024] *
         r2 = self.stage3(r1)        # Shape r2: [b,   24,  p/2,  512] *
@@ -215,11 +201,8 @@ class EfficientNet(nn.Module):
         r5 = self.stage6(r4)        # Shape r5: [b,  112,  p/8   128] *
         r6 = self.stage7(r5)        # Shape r6: [b,  192,  p/16,  64]
         r7 = self.stage8(r6)        # Shape r7: [b,  320,  p/16,  64] *
-        r8 = self.stage9(r7)        # Shape r8: [b, 1280,     1,   1]
-        r8 = torch.flatten(r8, 1)   # Shape r8: [b, 1280]
-        r9 = self.stage10(r8)       # Shape r9: [b,    4] *
 
-        return [r1, r2, r3, r5, r7], r9
+        return [r1, r2, r3, r5, r7]
     
 if __name__ == "__main__":
     from torchsummary import summary

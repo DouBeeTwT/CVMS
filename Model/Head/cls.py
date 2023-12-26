@@ -15,11 +15,11 @@ class cls(nn.Module):
             nn.Softmax()
         )
 
-    def forward(self, x:Tensor) -> Tensor:
-        return self.layer(x)
+    def forward(self, x:list) -> Tensor:
+        return self.layer(x[-1])
     
 if __name__ == "__main__":
-    tensor_test_input = torch.rand(2, 320, 64, 64)
+    tensor_test_input = [0, 0, 0, 0, torch.rand(2, 320, 64, 64)]
     model = cls(channel_input=320, classes=4, dim=1280)
     out = model(tensor_test_input)
     print("Shape of output:", out.shape)
